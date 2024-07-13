@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-password-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-password-generator
+  template:
+    metadata:
+      labels:
+        app: vault-password-generator
+    spec:
+      serviceAccountName: vault-auth
+      containers:
+      - name: vault-password-generator
+        image: your_docker_username/vault-password-generator:latest
+        env:
+        - name: VAULT_ADDR
+          value: "http://vault.default.svc.cluster.local:8200"
+        - name: VAULT_ROLE
+          value: "my-role"
+        - name: CONFIG_FILE
+          value: "/app/config.yaml"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config-volume
+        secret:
+          secretName: vault-config

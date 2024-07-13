@@ -1,0 +1,13 @@
+secrets:
+  - name: app1
+    length: 16
+    kv2_path: "kv2/app1"
+    manual_secret: ""
+  - name: app2
+    length: 20
+    kv2_path: "kv2/app2"
+    manual_secret: "my_custom_password"
+  - name: app3
+    length: 24
+    kv2_path: "kv2/app3"
+    manual_secret: ""

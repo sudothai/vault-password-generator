@@ -15,7 +15,7 @@ spec:
       serviceAccountName: vault-auth
       containers:
       - name: vault-password-generator
-        image: your_docker_username/vault-password-generator:latest
+        image: sudothai/vault-password-generator:latest
         env:
         - name: VAULT_ADDR
           value: "http://vault.default.svc.cluster.local:8200"

@@ -15,125 +15,146 @@ import (
 
 // Config represents the configuration structure
 type Config struct {
-    Secrets []Secret `yaml:"secrets"`
+	Secrets []Secret `yaml:"secrets"`
 }
 
 // Secret represents a single secret configuration
 type Secret struct {
-    Name         string `yaml:"name"`
-    Length       int    `yaml:"length"`
-    KV2Path      string `yaml:"kv2_path"`
-    ManualSecret string `yaml:"manual_secret,omitempty"`
+	Name         string `yaml:"name"`
+	Length       int    `yaml:"length"`
+	KV2Path      string `yaml:"kv2_path"`
+	ManualSecret string `yaml:"manual_secret,omitempty"`
 }
 
 func main() {
-    // Get configuration from environment variables
-    vaultAddr := getEnv("VAULT_ADDR", "http://vault.default.svc.cluster.local:8200")
-    role := getEnv("VAULT_ROLE", "my-role")
+	// Get configuration from environment variables
+	vaultAddr := getEnv("VAULT_ADDR", "http://127.0.0.1:8200")
+	authMethod := getEnv("AUTH_METHOD", "token")
+	role := getEnv("VAULT_ROLE", "")
+	token := getEnv("VAULT_TOKEN", "")
 
-    // Read configuration file
-    configFile := getEnv("CONFIG_FILE", "/app/config.yaml")
-    config, err := readConfig(configFile)
-    if err != nil {
-        log.Fatalf("failed to read configuration: %v", err)
-    }
+	// Read configuration file
+	configFile := getEnv("CONFIG_FILE", "./config.yaml")
+	config, err := readConfig(configFile)
+	if err != nil {
+		log.Fatalf("failed to read configuration: %v", err)
+	}
 
-    // Configure Vault client
-    configVault := vault.DefaultConfig()
-    configVault.Address = vaultAddr
+	// Configure Vault client
+	configVault := vault.DefaultConfig()
+	configVault.Address = vaultAddr
 
-    client, err := vault.NewClient(configVault)
-    if err != nil {
-        log.Fatalf("failed to create Vault client: %v", err)
-    }
+	client, err := vault.NewClient(configVault)
+	if err != nil {
+		log.Fatalf("failed to create Vault client: %v", err)
+	}
 
-    // Kubernetes authentication
-    k8sAuth, err := k8sauth.NewKubernetesAuth(role)
-    if err != nil {
-        log.Fatalf("failed to create Kubernetes auth method: %v", err)
-    }
+	// Authenticate with Vault
+	if authMethod == "kubernetes" {
+		if !isRunningInKubernetes() {
+			log.Fatalf("Kubernetes authentication is configured but the application is not running in Kubernetes")
+		}
+		if role == "" {
+			log.Fatalf("VAULT_ROLE environment variable is required for Kubernetes authentication")
+		}
+		k8sAuth, err := k8sauth.NewKubernetesAuth(role)
+		if err != nil {
+			log.Fatalf("failed to create Kubernetes auth method: %v", err)
+		}
+		authInfo, err := client.Auth().Login(context.Background(), k8sAuth)
+		if err != nil {
+			log.Fatalf("failed to authenticate with Vault: %v", err)
+		}
+		if authInfo == nil {
+			log.Fatalf("no auth info was returned after login")
+		}
+	} else if authMethod == "token" {
+		if token == "" {
+			log.Fatalf("VAULT_TOKEN environment variable is required for token authentication")
+		}
+		client.SetToken(token)
+	} else {
+		log.Fatalf("unsupported authentication method: %s", authMethod)
+	}
 
-    authInfo, err := client.Auth().Login(context.Background(), k8sAuth)
-    if err != nil {
-        log.Fatalf("failed to authenticate with Vault: %v", err)
-    }
+	// Generate or use manual secrets for each secret and store them in Vault
+	for _, secret := range config.Secrets {
+		var password string
+		if secret.ManualSecret != "" {
+			password = secret.ManualSecret
+		} else {
+			password, err = generateRandomPassword(client, secret.Length)
+			if err != nil {
+				log.Fatalf("failed to generate password for secret %s: %v", secret.Name, err)
+			}
+		}
 
-    if authInfo == nil {
-        log.Fatalf("no auth info was returned after login")
-    }
+		fmt.Printf("Password for %s: %s\n", secret.Name, password)
 
-    // Generate or use manual secrets for each secret and store them in Vault
-    for _, secret := range config.Secrets {
-        var password string
-        if secret.ManualSecret != "" {
-            password = secret.ManualSecret
-        } else {
-            password, err = generateRandomPassword(client, secret.Length)
-            if err != nil {
-                log.Fatalf("failed to generate password for secret %s: %v", secret.Name, err)
-            }
-        }
-
-        fmt.Printf("Password for %s: %s\n", secret.Name, password)
-
-        // Store the password in Vault KV2
-        err = storeSecretInVault(client, secret.KV2Path, secret.Name, password)
-        if err != nil {
-            log.Fatalf("failed to store password for secret %s in Vault: %v", secret.Name, err)
-        }
-    }
+		// Store the password in Vault KV2
+		err = storeSecretInVault(client, secret.KV2Path, secret.Name, password)
+		if err != nil {
+			log.Fatalf("failed to store password for secret %s in Vault: %v", secret.Name, err)
+		}
+	}
 }
 
 func getEnv(key, defaultValue string) string {
-    value, exists := os.LookupEnv(key)
-    if !exists {
-        return defaultValue
-    }
-    return value
+	value, exists := os.LookupEnv(key)
+	if !exists {
+		return defaultValue
+	}
+	return value
 }
 
 func readConfig(filename string) (*Config, error) {
-    data, err := ioutil.ReadFile(filename)
-    if err != nil {
-        return nil, fmt.Errorf("failed to read file %s: %v", filename, err)
-    }
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %v", filename, err)
+	}
 
-    var config Config
-    err = yaml.Unmarshal(data, &config)
-    if err != nil {
-        return nil, fmt.Errorf("failed to unmarshal YAML: %v", err)
-    }
+	var config Config
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal YAML: %v", err)
+	}
 
-    return &config, nil
+	return &config, nil
 }
 
 func generateRandomPassword(client *vault.Client, length int) (string, error) {
-    // Generate a random password using the "transit" secrets engine
-    secret, err := client.Logical().Write("sys/tools/random/password", map[string]interface{}{
-        "length": length,
-    })
-    if err != nil {
-        return "", fmt.Errorf("failed to generate random password: %v", err)
-    }
+	// Generate a random password using the "transit" secrets engine
+	secret, err := client.Logical().Write("sys/tools/random/password", map[string]interface{}{
+		"length": length,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to generate random password: %v", err)
+	}
 
-    password, ok := secret.Data["random_password"].(string)
-    if !ok {
-        return "", fmt.Errorf("failed to parse generated password")
-    }
+	password, ok := secret.Data["random_password"].(string)
+	if !ok {
+		return "", fmt.Errorf("failed to parse generated password")
+	}
 
-    return password, nil
+	return password, nil
 }
 
 func storeSecretInVault(client *vault.Client, path, secretName, password string) error {
-    // Store the password in the KV2 secrets engine
-    data := map[string]interface{}{
-        "data": map[string]interface{}{
-            secretName: password,
-        },
-    }
-    _, err := client.Logical().Write(path, data)
-    if err != nil {
-        return fmt.Errorf("failed to write secret to Vault: %v", err)
-    }
-    return nil
+	// Store the password in the KV2 secrets engine
+	data := map[string]interface{}{
+		"data": map[string]interface{}{
+			secretName: password,
+		},
+	}
+	_, err := client.Logical().Write(path, data)
+	if err != nil {
+		return fmt.Errorf("failed to write secret to Vault: %v", err)
+	}
+	return nil
+}
+
+// isRunningInKubernetes checks if the application is running in a Kubernetes cluster
+func isRunningInKubernetes() bool {
+	_, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	return !os.IsNotExist(err)
 }
